@@ -7,3 +7,6 @@ __pycache__/
 
 # VS Code settings
 .vscode/
+
+# AudioSet subset
+audioset_subset/
