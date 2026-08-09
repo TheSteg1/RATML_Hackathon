@@ -9,7 +9,13 @@ entirely. The dataset's own train/eval split becomes your train/test split,
 with no leakage between them.
 
 Install first:
-    pip install datasets soundfile librosa
+    pip install datasets soundfile librosa numpy
+
+Note: this deliberately avoids torch. Recent versions of the `datasets`
+library default to decoding audio via `torchcodec` (which requires torch),
+but we set decode=False on the Audio column and decode the raw bytes
+ourselves with soundfile/librosa instead - so this works fine in a
+TensorFlow-only environment with no torch installed.
 
 Then run:
     python build_audioset_subset.py
@@ -46,12 +52,23 @@ TARGET_LABELS = {
     "Screaming": "distress",
     "Shout": "distress",
     "Crying, sobbing": "distress",
+    # Deliberately targeted hard negatives: background chatter/ambience is
+    # the main real-world false-positive source, so pull it in explicitly
+    # rather than hoping the random "other" catch-all happens to include it.
+    "Hubbub, speech noise, speech babble": "other",
+    "Chatter": "other",
+    "Crowd": "other",
 }
 
 # If a clip has labels matching more than one target class (AudioSet clips
 # are multi-label - e.g. a clip can be both "Speech" and "Screaming" at
 # once), this decides which one wins. Earlier = higher priority.
-CLASS_PRIORITY = ["distress", "speech", "music"]
+# NOTE: "other" sits above "speech"/"music" on purpose - a chatter clip that
+# also happens to carry a "Speech" tag should still land in "other", since
+# that's precisely the hard-negative example we're trying to capture. Only
+# "distress" outranks it, since a real distress signal matters more than a
+# clean negative example.
+CLASS_PRIORITY = ["distress", "other", "speech", "music"]
 
 INCLUDE_OTHER_CLASS = True   # also sample a generic negative/"other" class
 MAX_PER_CLASS = 500          # cap per target class, per split
@@ -73,11 +90,13 @@ def process_split(split_name: str, manifest_writer: csv.writer) -> None:
     ds = load_dataset(
         "agkphysics/AudioSet", AUDIOSET_CONFIG, split=split_name, streaming=True
     )
-    ds = ds.cast_column("audio", Audio(sampling_rate=SAMPLE_RATE, decode=False))
+    # decode=False sidesteps the torchcodec (and therefore torch) backend -
+    # we decode the raw bytes ourselves with soundfile/librosa below instead
+    ds = ds.cast_column("audio", Audio(decode=False))
 
     counts: Counter = Counter()
-    n_target_classes = len(set(TARGET_LABELS.values())) + int(INCLUDE_OTHER_CLASS)
-    target_total = MAX_PER_CLASS * n_target_classes
+    all_classes = set(TARGET_LABELS.values()) | ({"other"} if INCLUDE_OTHER_CLASS else set())
+    target_total = MAX_PER_CLASS * len(all_classes)
 
     for example in ds:
         if sum(counts.values()) >= target_total:
@@ -103,13 +122,14 @@ def process_split(split_name: str, manifest_writer: csv.writer) -> None:
         out_path = os.path.join(class_dir, f"{video_id}.wav")
 
         try:
-            audio_bytes = example["audio"]["bytes"]
-            if audio_bytes is None:
-                raise ValueError("Audio bytes are missing")
-
-            audio_array, _ = librosa.load(
-                io.BytesIO(audio_bytes), sr=SAMPLE_RATE, mono=True
-            )
+            raw_bytes = example["audio"]["bytes"]
+            audio_array, sr = sf.read(io.BytesIO(raw_bytes))
+            if audio_array.ndim > 1:  # stereo/multi-channel -> mono
+                audio_array = audio_array.mean(axis=1)
+            if sr != SAMPLE_RATE:
+                audio_array = librosa.resample(
+                    audio_array.astype(np.float32), orig_sr=sr, target_sr=SAMPLE_RATE
+                )
             sf.write(out_path, audio_array, SAMPLE_RATE)
         except Exception as e:
             print(f"  skipping {video_id}: {e}")

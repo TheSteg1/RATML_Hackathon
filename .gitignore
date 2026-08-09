@@ -10,3 +10,6 @@ __pycache__/
 
 # AudioSet subset
 audioset_subset/
+
+# Recordings
+Recordings/
