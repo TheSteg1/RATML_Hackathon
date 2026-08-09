@@ -122,6 +122,7 @@ canvas{display:block;border-radius:50%;box-shadow:0 0 0 2px var(--panel-line),0 
 
   <div class="sec">
     <div class="sec-label">Status</div>
+    <div class="row"><label>Offline after</label><input id="offlineSecs" type="number" value="5" min="1" step="1" style="width:50px"> s</div>
     <div id="status">waiting for data...</div>
   </div>
 </aside>
@@ -507,21 +508,39 @@ async function tick(){
     }
   }
 
+  const offlineMs = Math.max(1, parseFloat(document.getElementById('offlineSecs').value) || 5) * 1000;
+  let offlineCount = 0;
+
   coords.forEach(([x,y],i)=>{
     const px = CX + x*SCALE, py = CY - y*SCALE;
     const n = st.nodes[nodeIds[i]];
     const isSelf = nodeIds[i]===selfMac;
-    const dotColor = n.is_anchor ? '#3f6b52' : (n.help_detected ? '#ff3b3b' : (isSelf ? '#00eaff' : '#39ff88'));
+    // n.age_ms is only present once the board's been reflashed with the
+    // firmware that reports it -- treat missing/undefined as "unknown, so
+    // don't flag as offline" rather than crashing or false-flagging everyone.
+    const isOffline = typeof n.age_ms === 'number' && n.age_ms > offlineMs;
+    if (isOffline) offlineCount++;
+    const dotColor = isOffline ? '#e03050' : (n.is_anchor ? '#3f6b52' : (n.help_detected ? '#ff3b3b' : (isSelf ? '#00eaff' : '#39ff88')));
     const dotR = (n.is_anchor?6:8) * DOTSCALE;
     ctx.save();
-    ctx.shadowColor = dotColor; ctx.shadowBlur = 10*DOTSCALE;
+    if (isOffline) ctx.globalAlpha = 0.55;
+    ctx.shadowColor = dotColor; ctx.shadowBlur = (isOffline?4:10)*DOTSCALE;
     ctx.fillStyle = dotColor;
     ctx.beginPath(); ctx.arc(px,py,dotR,0,Math.PI*2); ctx.fill();
+    if (isOffline){
+      // dashed outline ring -- last-known position, held frozen, clearly
+      // flagged as stale rather than blending in with live nodes
+      ctx.shadowBlur = 0; ctx.setLineDash([3*DOTSCALE,3*DOTSCALE]);
+      ctx.strokeStyle = dotColor; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(px,py,dotR+4*DOTSCALE,0,Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.restore();
     ctx.fillStyle = dotColor; ctx.font = `${Math.max(9,10*DOTSCALE)}px monospace`;
-    ctx.fillText((n.is_anchor?'AP ':'')+nodeIds[i].slice(-5), px-18*DOTSCALE, py-12*DOTSCALE);
+    const label = (n.is_anchor?'AP ':'')+nodeIds[i].slice(-5)+(isOffline?' (offline)':'');
+    ctx.fillText(label, px-18*DOTSCALE, py-12*DOTSCALE);
   });
-  document.getElementById('status').textContent = `${nodeIds.length} nodes, updated ${new Date().toLocaleTimeString()}`;
+  document.getElementById('status').textContent = `${nodeIds.length} nodes${offlineCount?` (${offlineCount} offline)`:''}, updated ${new Date().toLocaleTimeString()}`;
 }
 
 document.getElementById('selfPicker').addEventListener('change', e=>{

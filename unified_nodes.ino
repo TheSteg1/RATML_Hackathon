@@ -106,11 +106,22 @@ void updateNodeState(const uint8_t* mac, bool help, float conf, float amp,
   }
   for (int i = 0; i < n.peerCount; i++) {
     String peerId = macToStr(n.peers[i].mac);
-    if (knownNodes.find(peerId) == knownNodes.end()) {
+    auto it = knownNodes.find(peerId);
+    if (it == knownNodes.end()) {
       NodeState &stub = knownNodes[peerId];
       stub.ever_seen = true;
       stub.is_anchor = true;
       stub.last_seen = millis();
+    } else if (it->second.is_anchor) {
+      // Anchors (ambient routers, etc.) never send their own NodePacket, so
+      // the only "still there" signal we get for them is someone currently
+      // hearing them as a peer -- refresh last_seen on every such sighting,
+      // the same way a real node's own broadcast would. Real (non-anchor)
+      // nodes are deliberately excluded here: their last_seen should only
+      // reflect their OWN broadcasts, so unplugging one still reads as
+      // offline even while a stale cached peer entry keeps circulating from
+      // whichever other nodes heard it before it went dark.
+      it->second.last_seen = millis();
     }
   }
 }
@@ -145,6 +156,7 @@ void handleState() {
     json += "\"help_detected\":" + String(n.help_detected?"true":"false") + ",";
     json += "\"amplitude\":" + String(n.amplitude,3) + ",";
     json += "\"is_anchor\":" + String(n.is_anchor?"true":"false") + ",";
+    json += "\"age_ms\":" + String(millis() - n.last_seen) + ",";
     json += "\"peers\":[";
     for (int i = 0; i < n.peerCount; i++) {
       if (i) json += ",";
